@@ -1,4 +1,4 @@
-name: IME Gitee Mirror Sync
+name: IME同步到gitee镜像
 on:
   workflow_dispatch:
   schedule:
@@ -13,10 +13,11 @@ jobs:
       GITEE_API: https://gitee.com/api/v5
       GITHUB_API: https://api.github.com
       PARALLEL_JOBS: 4
-      # 代理镜像列表
-      MIRROR_PROXIES: '["https://ghfast.top","https://github.moeyy.xyz","https://ghproxy.net","https://mirror.ghproxy.com"]'
       MY_GITEE_PAT: ${{ secrets.MY_GITEE_PAT }}
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Install dependencies
         run: sudo apt update && sudo apt install -y jq
 
@@ -25,7 +26,7 @@ jobs:
           git config --global user.name "yang"
           git config --global user.email "xzyht-nine@outlook.com"
 
-      - name: Run mirror sync script
+      - name: Run mirror sync
         run: |
           #!/usr/bin/env bash
           set -o pipefail
@@ -35,30 +36,15 @@ jobs:
             exit 1
           fi
 
-          # 仓库映射表 key:gitee仓库名 value:github上游地址
-          declare -A REPO_MAP=(
-            ["fcitx5"]="https://github.com/fcitx/fcitx5.git"
-            ["prebuilt"]="https://github.com/fcitx5-android/prebuilt.git"
-            ["fcitx5-lua"]="https://github.com/fcitx/fcitx5-lua.git"
-            ["libime"]="https://github.com/fcitx/libime.git"
-            ["fcitx5-chinese-addons"]="https://github.com/fcitx/fcitx5-chinese-addons.git"
-            ["anthy-cmake"]="https://github.com/fcitx5-android/anthy-cmake.git"
-            ["fcitx5-anthy"]="https://github.com/fcitx/fcitx5-anthy.git"
-            ["fcitx5-unikey"]="https://github.com/fcitx/fcitx5-unikey.git"
-            ["fcitx5-rime"]="https://github.com/fcitx/fcitx5-rime.git"
-            ["rime-prelude"]="https://github.com/rime/rime-prelude.git"
-            ["rime-essay"]="https://github.com/rime/rime-essay.git"
-            ["rime-luna-pinyin"]="https://github.com/rime/rime-luna-pinyin.git"
-            ["rime-stroke"]="https://github.com/rime/rime-stroke.git"
-            ["fcitx5-hangul"]="https://github.com/fcitx/fcitx5-hangul.git"
-            ["fcitx5-chewing"]="https://github.com/fcitx/fcitx5-chewing.git"
-            ["fcitx5-sayura"]="https://github.com/fcitx/fcitx5-sayura.git"
-            ["libime-jyutping"]="https://github.com/fcitx/libime-jyutping.git"
-            ["Rules"]="https://github.com/ClearURLs/Rules.git"
-            ["fcitx5-libthai"]="https://github.com/fcitx/fcitx5-libthai.git"
-          )
+          # 从文件读取映射表
+          declare -A REPO_MAP
+          while IFS='=' read -r key value; do
+            [[ "$key" =~ ^[[:space:]]*\"(.+)\"$ ]] && key="${BASH_REMATCH[1]}"
+            [[ "$value" =~ ^[[:space:]]*\"(.+)\"[[:space:]]*,?[[:space:]]*$ ]] && value="${BASH_REMATCH[1]}"
+            [[ -n "$key" && -n "$value" ]] && REPO_MAP["$key"]="$value"
+          done < <(sed -n '/{/,/}/p' IME/repo-map.json | grep -E '^\s*"')
 
-          TMP_WORK="/tmp/sync_$(date +%s)_$$"
+          TMP_WORK="/tmp/sync_$(date +%s%N | cut -c1-13)"
           mkdir -p "${TMP_WORK}"
           echo 0 > "${TMP_WORK}/job_count"
 
@@ -141,32 +127,7 @@ jobs:
           done
           echo "Check stat: ok=${OK_COUNT} need_sync=${#SYNC_REPOS[@]} skip=${SKIP_COUNT} fail=${FAIL_COUNT}"
 
-          # 克隆带代理重试
-          clone_with_retry(){
-            local upstream_git="$1"
-            local target_dir="$2"
-            local repo_name="$3"
-            local attempt=0
-            local all_sources=("$upstream_git")
-            mapfile -t proxies < <(echo "$MIRROR_PROXIES" | jq -r '.[]')
-            for px in "${proxies[@]}"; do
-              all_sources+=("${px}/${upstream_git}")
-            done
-            local total=${#all_sources[@]}
-            for src in "${all_sources[@]}"; do
-              attempt=$((attempt+1))
-              echo "  [${attempt}/${total}] try clone ${src}"
-              rm -rf "${target_dir}"
-              if git clone --mirror "${src}" "${target_dir}" 2>/dev/null; then
-                echo "  [OK] clone success"
-                return 0
-              fi
-              echo "  [FAIL] clone failed"
-            done
-            echo "  [FATAL] all sources failed for ${repo_name}"
-            return 1
-          }
-
+          # 推送到gitee
           push_to_gitee(){
             local repo_name="$1"
             local mirror_dir="$2"
@@ -197,7 +158,9 @@ jobs:
               echo "Processing ${repo_name}"
               MIRROR_DIR="${TMP_WORK}/mirror_${repo_name}"
               rm -rf "${MIRROR_DIR}"
-              if clone_with_retry "${upstream_git}" "${MIRROR_DIR}" "${repo_name}"; then
+              echo "  [1/2] clone ${upstream_git}"
+              if git clone --mirror "${upstream_git}" "${MIRROR_DIR}" 2>/dev/null; then
+                echo "  [OK] clone success"
                 if push_to_gitee "${repo_name}" "${MIRROR_DIR}"; then
                   echo "[SUCCESS] ${repo_name} synced"
                   SYNC_OK=$((SYNC_OK+1))
@@ -206,6 +169,7 @@ jobs:
                   SYNC_FAIL=$((SYNC_FAIL+1))
                 fi
               else
+                echo "  [FAIL] clone failed"
                 echo "[FAILED] ${repo_name} clone error"
                 SYNC_FAIL=$((SYNC_FAIL+1))
               fi

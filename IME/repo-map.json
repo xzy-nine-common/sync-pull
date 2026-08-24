@@ -1,0 +1,21 @@
+{
+  "fcitx5": "https://github.com/fcitx/fcitx5.git",
+  "prebuilt": "https://github.com/fcitx5-android/prebuilt.git",
+  "fcitx5-lua": "https://github.com/fcitx/fcitx5-lua.git",
+  "libime": "https://github.com/fcitx/libime.git",
+  "fcitx5-chinese-addons": "https://github.com/fcitx/fcitx5-chinese-addons.git",
+  "anthy-cmake": "https://github.com/fcitx5-android/anthy-cmake.git",
+  "fcitx5-anthy": "https://github.com/fcitx/fcitx5-anthy.git",
+  "fcitx5-unikey": "https://github.com/fcitx/fcitx5-unikey.git",
+  "fcitx5-rime": "https://github.com/fcitx/fcitx5-rime.git",
+  "rime-prelude": "https://github.com/rime/rime-prelude.git",
+  "rime-essay": "https://github.com/rime/rime-essay.git",
+  "rime-luna-pinyin": "https://github.com/rime/rime-luna-pinyin.git",
+  "rime-stroke": "https://github.com/rime/rime-stroke.git",
+  "fcitx5-hangul": "https://github.com/fcitx/fcitx5-hangul.git",
+  "fcitx5-chewing": "https://github.com/fcitx/fcitx5-chewing.git",
+  "fcitx5-sayura": "https://github.com/fcitx/fcitx5-sayura.git",
+  "libime-jyutping": "https://github.com/fcitx/libime-jyutping.git",
+  "Rules": "https://github.com/ClearURLs/Rules.git",
+  "fcitx5-libthai": "https://github.com/fcitx/fcitx5-libthai.git"
+}
