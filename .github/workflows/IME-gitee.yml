@@ -218,17 +218,17 @@ jobs:
 
           # GitHub Actions Summary
           {
-            echo "## 🔄 Mirror Sync Report"
+            echo "## 🔄 镜像同步报告"
             echo ""
-            echo "| Metric | Count |"
-            echo "|--------|-------|"
-            echo "| ✅ Up-to-date | ${OK_COUNT} |"
-            echo "| 🔄 Synced | ${SYNC_OK:-0} |"
-            echo "| ⏭️ Skipped | ${SKIP_COUNT} |"
-            echo "| ❌ Failed | $((FAIL_COUNT + ${SYNC_FAIL:-0})) |"
+            echo "| 指标 | 数量 |"
+            echo "|------|------|"
+            echo "| ✅ 已是最新 | ${OK_COUNT} |"
+            echo "| 🔄 已同步 | ${SYNC_OK} |"
+            echo "| ⏭️ 跳过 | ${SKIP_COUNT} |"
+            echo "| ❌ 失败 | $((FAIL_COUNT + SYNC_FAIL)) |"
             echo ""
             if [[ ${#SYNC_REPOS[@]} -gt 0 ]]; then
-              echo "### Synced Repos"
+              echo "### 已同步仓库"
               echo ""
               for repo in "${SYNC_REPOS[@]}"; do
                 echo "- \`${repo}\`"
