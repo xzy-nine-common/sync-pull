@@ -15,11 +15,11 @@ fi
 
 # 从文件读取映射表
 declare -A REPO_MAP
-while IFS='=' read -r key value; do
-  [[ "$key" =~ ^[[:space:]]*\"(.+)\"$ ]] && key="${BASH_REMATCH[1]}"
-  [[ "$value" =~ ^[[:space:]]*\"(.+)\"[[:space:]]*,?[[:space:]]*$ ]] && value="${BASH_REMATCH[1]}"
-  [[ -n "$key" && -n "$value" ]] && REPO_MAP["$key"]="$value"
-done < <(sed -n '/{/,/}/p' "${REPO_MAP_FILE}" | grep -E '^\s*"')
+while IFS= read -r line; do
+  key=$(echo "$line" | jq -r 'keys[0]')
+  value=$(echo "$line" | jq -r 'values[0]')
+  [[ -n "$key" && -n "$value" && "$key" != "null" && "$value" != "null" ]] && REPO_MAP["$key"]="$value"
+done < <(jq -c 'to_entries[]' "${REPO_MAP_FILE}")
 
 TMP_WORK="/tmp/sync_$(date +%s%N | cut -c1-13)"
 mkdir -p "${TMP_WORK}"
