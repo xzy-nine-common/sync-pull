@@ -1,8 +1,10 @@
 name: IME同步到gitee镜像
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
   schedule:
-    - cron: '0 2 1 * *'
+    - cron: '0 2 * * *'
 
 jobs:
   sync:
