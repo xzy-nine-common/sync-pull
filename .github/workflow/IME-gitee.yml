@@ -1,0 +1,218 @@
+name: IME Gitee Mirror Sync
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 2 1 * *'
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    env:
+      GITEE_USER: xzy_nine
+      GITEE_ORG: xzy-ime
+      GITEE_API: https://gitee.com/api/v5
+      GITHUB_API: https://api.github.com
+      PARALLEL_JOBS: 4
+      # 代理镜像列表
+      MIRROR_PROXIES: '["https://ghfast.top","https://github.moeyy.xyz","https://ghproxy.net","https://mirror.ghproxy.com"]'
+      MY_GITEE_PAT: ${{ secrets.MY_GITEE_PAT }}
+    steps:
+      - name: Install dependencies
+        run: sudo apt update && sudo apt install -y jq
+
+      - name: Configure git
+        run: |
+          git config --global user.name "yang"
+          git config --global user.email "xzyht-nine@outlook.com"
+
+      - name: Run mirror sync script
+        run: |
+          #!/usr/bin/env bash
+          set -o pipefail
+
+          if [[ -z "${MY_GITEE_PAT}" ]]; then
+            echo "FATAL: MY_GITEE_PAT secret not set"
+            exit 1
+          fi
+
+          # 仓库映射表 key:gitee仓库名 value:github上游地址
+          declare -A REPO_MAP=(
+            ["fcitx5"]="https://github.com/fcitx/fcitx5.git"
+            ["prebuilt"]="https://github.com/fcitx5-android/prebuilt.git"
+            ["fcitx5-lua"]="https://github.com/fcitx/fcitx5-lua.git"
+            ["libime"]="https://github.com/fcitx/libime.git"
+            ["fcitx5-chinese-addons"]="https://github.com/fcitx/fcitx5-chinese-addons.git"
+            ["anthy-cmake"]="https://github.com/fcitx5-android/anthy-cmake.git"
+            ["fcitx5-anthy"]="https://github.com/fcitx/fcitx5-anthy.git"
+            ["fcitx5-unikey"]="https://github.com/fcitx/fcitx5-unikey.git"
+            ["fcitx5-rime"]="https://github.com/fcitx/fcitx5-rime.git"
+            ["rime-prelude"]="https://github.com/rime/rime-prelude.git"
+            ["rime-essay"]="https://github.com/rime/rime-essay.git"
+            ["rime-luna-pinyin"]="https://github.com/rime/rime-luna-pinyin.git"
+            ["rime-stroke"]="https://github.com/rime/rime-stroke.git"
+            ["fcitx5-hangul"]="https://github.com/fcitx/fcitx5-hangul.git"
+            ["fcitx5-chewing"]="https://github.com/fcitx/fcitx5-chewing.git"
+            ["fcitx5-sayura"]="https://github.com/fcitx/fcitx5-sayura.git"
+            ["libime-jyutping"]="https://github.com/fcitx/libime-jyutping.git"
+            ["Rules"]="https://github.com/ClearURLs/Rules.git"
+            ["fcitx5-libthai"]="https://github.com/fcitx/fcitx5-libthai.git"
+          )
+
+          TMP_WORK="/tmp/sync_$(date +%s)_$$"
+          mkdir -p "${TMP_WORK}"
+          echo 0 > "${TMP_WORK}/job_count"
+
+          # 获取gitee组织仓库列表
+          curl -s -u "${GITEE_USER}:${MY_GITEE_PAT}" "${GITEE_API}/orgs/${GITEE_ORG}/repos?per_page=100" > "${TMP_WORK}/gitee_repos.json"
+
+          # 并行校验每个仓库commit是否一致
+          while read -r repo_obj; do
+            repo_name=$(echo "$repo_obj" | jq -r ".name")
+            gitee_default_branch=$(echo "$repo_obj" | jq -r ".default_branch")
+            upstream_git="${REPO_MAP[$repo_name]-}"
+
+            if [[ -z "$upstream_git" ]]; then
+              echo "[SKIP] no upstream mapping: ${repo_name}"
+              echo "SKIP" > "${TMP_WORK}/${repo_name}.result"
+              continue
+            fi
+
+            owner_repo=$(echo "$upstream_git" | sed -E 's#^https://github.com/(.*)\.git$#\1#')
+            if [[ -z "$owner_repo" ]]; then
+              echo "[ERROR] parse upstream failed: ${repo_name}"
+              echo "ERROR" > "${TMP_WORK}/${repo_name}.result"
+              continue
+            fi
+
+            (
+              gitee_hash=$(curl -s -u "${GITEE_USER}:${MY_GITEE_PAT}" "${GITEE_API}/repos/${GITEE_ORG}/${repo_name}/branches/${gitee_default_branch}" | jq -r ".commit.sha")
+              gh_def_branch=$(curl -s "${GITHUB_API}/repos/${owner_repo}" | jq -r ".default_branch")
+              github_hash=$(curl -s "${GITHUB_API}/repos/${owner_repo}/branches/${gh_def_branch}" | jq -r ".commit.sha")
+
+              if [[ "${github_hash}" == "null" || -z "${github_hash}" || "${gitee_hash}" == "null" || -z "${gitee_hash}" ]]; then
+                echo "SKIP" > "${TMP_WORK}/${repo_name}.result"
+              elif [[ "${github_hash}" == "${gitee_hash}" ]]; then
+                echo "OK" > "${TMP_WORK}/${repo_name}.result"
+              else
+                echo "NEED_SYNC" > "${TMP_WORK}/${repo_name}.result"
+              fi
+            ) &
+
+            cur=$(cat "${TMP_WORK}/job_count")
+            cur=$((cur + 1))
+            echo "$cur" > "${TMP_WORK}/job_count"
+            if (( cur >= PARALLEL_JOBS )); then
+              wait -n 2>/dev/null || wait
+              cur=$(cat "${TMP_WORK}/job_count")
+              cur=$((cur - 1))
+              echo "$cur" > "${TMP_WORK}/job_count"
+            fi
+          done < <(jq -c ".[]" "${TMP_WORK}/gitee_repos.json")
+          wait
+
+          # 收集校验结果
+          SYNC_REPOS=()
+          OK_COUNT=0
+          SKIP_COUNT=0
+          FAIL_COUNT=0
+          for result_file in "${TMP_WORK}"/*.result; do
+            [[ -f "$result_file" ]] || continue
+            repo_name=$(basename "$result_file" .result)
+            status=$(cat "$result_file")
+            case "$status" in
+              OK)
+                echo "[OK] ${repo_name} already up-to-date"
+                OK_COUNT=$((OK_COUNT + 1))
+                ;;
+              NEED_SYNC)
+                echo "[SYNC] ${repo_name} needs mirror"
+                SYNC_REPOS+=("$repo_name")
+                ;;
+              SKIP)
+                SKIP_COUNT=$((SKIP_COUNT +1))
+                ;;
+              *)
+                echo "[ERROR] ${repo_name} check failed"
+                FAIL_COUNT=$((FAIL_COUNT +1))
+                ;;
+            esac
+          done
+          echo "Check stat: ok=${OK_COUNT} need_sync=${#SYNC_REPOS[@]} skip=${SKIP_COUNT} fail=${FAIL_COUNT}"
+
+          # 克隆带代理重试
+          clone_with_retry(){
+            local upstream_git="$1"
+            local target_dir="$2"
+            local repo_name="$3"
+            local attempt=0
+            local all_sources=("$upstream_git")
+            mapfile -t proxies < <(echo "$MIRROR_PROXIES" | jq -r '.[]')
+            for px in "${proxies[@]}"; do
+              all_sources+=("${px}/${upstream_git}")
+            done
+            local total=${#all_sources[@]}
+            for src in "${all_sources[@]}"; do
+              attempt=$((attempt+1))
+              echo "  [${attempt}/${total}] try clone ${src}"
+              rm -rf "${target_dir}"
+              if git clone --mirror "${src}" "${target_dir}" 2>/dev/null; then
+                echo "  [OK] clone success"
+                return 0
+              fi
+              echo "  [FAIL] clone failed"
+            done
+            echo "  [FATAL] all sources failed for ${repo_name}"
+            return 1
+          }
+
+          push_to_gitee(){
+            local repo_name="$1"
+            local mirror_dir="$2"
+            cd "${mirror_dir}" || return 1
+            git remote add gitee "https://${GITEE_USER}:${MY_GITEE_PAT}@gitee.com/${GITEE_ORG}/${repo_name}.git"
+            local push_output
+            push_output=$(git push --mirror gitee 2>&1) || true
+            local real_errors
+            real_errors=$(echo "$push_output" | grep -v "refs/pull/" | grep -iE "error|fatal|failed" || true)
+            echo "$push_output" | grep -v "refs/pull/"
+            git remote remove gitee
+            cd - >/dev/null || return 1
+            if [[ -n "$real_errors" ]]; then
+              echo "[PUSH ERROR] $real_errors"
+              return 1
+            fi
+            return 0
+          }
+
+          # 执行同步
+          if [[ ${#SYNC_REPOS[@]} -eq 0 ]]; then
+            echo "All repos are up-to-date, nothing to sync."
+          else
+            echo "Start syncing ${#SYNC_REPOS[@]} repos..."
+            SYNC_OK=0
+            SYNC_FAIL=0
+            for repo_name in "${SYNC_REPOS[@]}"; do
+              upstream_git="${REPO_MAP[$repo_name]}"
+              echo "----------------------------------------"
+              echo "Processing ${repo_name}"
+              MIRROR_DIR="${TMP_WORK}/mirror_${repo_name}"
+              rm -rf "${MIRROR_DIR}"
+              if clone_with_retry "${upstream_git}" "${MIRROR_DIR}" "${repo_name}"; then
+                if push_to_gitee "${repo_name}" "${MIRROR_DIR}"; then
+                  echo "[SUCCESS] ${repo_name} synced"
+                  SYNC_OK=$((SYNC_OK+1))
+                else
+                  echo "[FAILED] ${repo_name} push error"
+                  SYNC_FAIL=$((SYNC_FAIL+1))
+                fi
+              else
+                echo "[FAILED] ${repo_name} clone error"
+                SYNC_FAIL=$((SYNC_FAIL+1))
+              fi
+              rm -rf "${MIRROR_DIR}"
+            done
+            echo "Sync result: ok=${SYNC_OK} fail=${SYNC_FAIL}"
+          fi
+
+          rm -rf "${TMP_WORK}"
+          echo "Job finished."
