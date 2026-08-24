@@ -110,16 +110,15 @@ push_to_gitee(){
   git remote add gitee "https://${GITEE_USER}:${MY_GITEE_PAT}@gitee.com/${GITEE_ORG}/${repo_name}.git"
   local push_output
   push_output=$(git push --mirror gitee 2>&1) || true
-  local real_errors
-  real_errors=$(echo "$push_output" | grep -v "refs/pull/" | grep -iE "error|fatal|failed" || true)
   echo "$push_output" | grep -v "refs/pull/"
   git remote remove gitee
   cd - >/dev/null || return 1
-  if [[ -n "$real_errors" ]]; then
-    echo "[PUSH ERROR] $real_errors"
-    return 1
+  # 忽略 "failed to push some refs" (refs/pull/* 被拒) 只要有成功推送的分支即可
+  if echo "$push_output" | grep -qE '\->' && ! echo "$push_output" | grep -qiE "fatal|authentication"; then
+    return 0
   fi
-  return 0
+  echo "[PUSH ERROR] push failed"
+  return 1
 }
 
 # 执行同步
