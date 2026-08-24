@@ -115,6 +115,8 @@ jobs:
           OK_COUNT=0
           SKIP_COUNT=0
           FAIL_COUNT=0
+          SYNC_OK=0
+          SYNC_FAIL=0
           for result_file in "${TMP_WORK}"/*.result; do
             [[ -f "$result_file" ]] || continue
             repo_name=$(basename "$result_file" .result)
@@ -189,8 +191,6 @@ jobs:
             echo "All repos are up-to-date, nothing to sync."
           else
             echo "Start syncing ${#SYNC_REPOS[@]} repos..."
-            SYNC_OK=0
-            SYNC_FAIL=0
             for repo_name in "${SYNC_REPOS[@]}"; do
               upstream_git="${REPO_MAP[$repo_name]}"
               echo "----------------------------------------"
@@ -215,4 +215,24 @@ jobs:
           fi
 
           rm -rf "${TMP_WORK}"
+
+          # GitHub Actions Summary
+          {
+            echo "## 🔄 Mirror Sync Report"
+            echo ""
+            echo "| Metric | Count |"
+            echo "|--------|-------|"
+            echo "| ✅ Up-to-date | ${OK_COUNT} |"
+            echo "| 🔄 Synced | ${SYNC_OK:-0} |"
+            echo "| ⏭️ Skipped | ${SKIP_COUNT} |"
+            echo "| ❌ Failed | $((FAIL_COUNT + ${SYNC_FAIL:-0})) |"
+            echo ""
+            if [[ ${#SYNC_REPOS[@]} -gt 0 ]]; then
+              echo "### Synced Repos"
+              echo ""
+              for repo in "${SYNC_REPOS[@]}"; do
+                echo "- \`${repo}\`"
+              done
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
           echo "Job finished."
