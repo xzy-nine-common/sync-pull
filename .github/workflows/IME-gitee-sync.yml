@@ -1,0 +1,75 @@
+name: IME镜像-同步
+
+# 实际执行 clone + push 的工作流。
+# 触发方式:
+#   1. 被「IME镜像-每日检查」在有差异时调用(workflow_call), 只同步指定仓库
+#   2. 手动触发(workflow_dispatch), 可留空同步全部映射仓库
+on:
+  workflow_call:
+    inputs:
+      repos:
+        description: '待同步仓库, 逗号分隔; 留空表示全部'
+        required: false
+        type: string
+        default: ''
+  workflow_dispatch:
+    inputs:
+      repos:
+        description: '待同步仓库, 逗号分隔(如 fcitx5,libime); 留空表示全部'
+        required: false
+        type: string
+        default: ''
+
+# 同一时间只允许一个同步任务, 避免并发推送同一仓库
+concurrency:
+  group: ime-gitee-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: 同步
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      GITEE_USER: xzy_nine
+      GITEE_ORG: xzy-ime
+      PUSH_RETRY_MAX: 3
+      PUSH_RETRY_DELAY: 30
+      PUSH_TIMEOUT_SEC: 2700
+      MY_GITEE_PAT: ${{ secrets.MY_GITEE_PAT }}
+      TARGET_REPOS: ${{ inputs.repos }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt update && sudo apt install -y jq
+
+      - name: Configure git
+        run: |
+          git config --global user.name "yang"
+          git config --global user.email "xzyht-nine@outlook.com"
+
+      - name: 显示本次同步范围
+        run: |
+          if [[ -z "${TARGET_REPOS}" ]]; then
+            echo "未指定仓库, 将同步映射表中的全部仓库。"
+          else
+            echo "本次同步: ${TARGET_REPOS}"
+          fi
+
+      - name: Run mirror sync
+        run: bash sync.sh IME/repo-map.json "${TARGET_REPOS}"
+
+      - name: 失败时输出排查提示
+        if: failure()
+        run: |
+          {
+            echo ""
+            echo "### ❌ 排查提示"
+            echo ""
+            echo "存在推送失败的仓库, 已自动重试 3 次仍未成功。"
+            echo ""
+            echo '查看本次日志: `gh run view ${{ github.run_id }} --log`'
+            echo '只看失败步骤: `gh run view ${{ github.run_id }} --log-failed`'
+          } >> "$GITHUB_STEP_SUMMARY"
