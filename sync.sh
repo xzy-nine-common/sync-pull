@@ -1,176 +1,146 @@
 #!/usr/bin/env bash
+# 镜像同步: 把指定仓库(或全部映射仓库)镜像推送到 gitee
+# 用法: sync.sh <repo-map.json> [repo1,repo2,...]
+#       省略仓库列表时同步映射表中的全部仓库
+# 依赖环境变量: GITEE_USER GITEE_ORG MY_GITEE_PAT
+# 可选环境变量: PUSH_RETRY_MAX(默认3) PUSH_RETRY_DELAY(默认30) PUSH_TIMEOUT_SEC(默认2700)
+#
+# 说明: 本脚本不做 SHA 比对(比对在 check.sh 里), 收到谁就同步谁。
+#       推送交给 retry-push.sh, 带单次超时与自动重试。
 set -o pipefail
 
 REPO_MAP_FILE="$1"
+REPO_LIST="$2"
+
+PUSH_RETRY_MAX="${PUSH_RETRY_MAX:-3}"
+PUSH_RETRY_DELAY="${PUSH_RETRY_DELAY:-30}"
+PUSH_TIMEOUT_SEC="${PUSH_TIMEOUT_SEC:-2700}"
 
 if [[ -z "${MY_GITEE_PAT}" ]]; then
   echo "FATAL: MY_GITEE_PAT not set"
   exit 1
 fi
 
-if [[ ! -f "${REPO_MAP_FILE}" ]]; then
+if [[ -z "${REPO_MAP_FILE}" || ! -f "${REPO_MAP_FILE}" ]]; then
   echo "FATAL: repo map file not found: ${REPO_MAP_FILE}"
   exit 1
 fi
 
-# 从文件读取映射表
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# 读取映射表: gitee 仓库名 -> GitHub 上游地址
 declare -A REPO_MAP
-while IFS=' ' read -r key value; do
-  REPO_MAP["$key"]="$value"
+while IFS=' ' read -r key value || [[ -n "${key}" ]]; do
+  [[ -n "${key}" ]] || continue
+  REPO_MAP["${key}"]="${value}"
 done < <(jq -r 'to_entries[] | "\(.key) \(.value)"' "${REPO_MAP_FILE}")
 
-TMP_WORK="/tmp/sync_$(date +%s%N | cut -c1-13)"
-mkdir -p "${TMP_WORK}"
-echo 0 > "${TMP_WORK}/job_count"
-
-# 获取gitee组织仓库列表
-curl -s -u "${GITEE_USER}:${MY_GITEE_PAT}" "${GITEE_API}/orgs/${GITEE_ORG}/repos?per_page=100" > "${TMP_WORK}/gitee_repos.json"
-
-# 并行校验每个仓库commit是否一致
-while read -r repo_obj; do
-  repo_name=$(echo "$repo_obj" | jq -r ".name")
-  gitee_default_branch=$(echo "$repo_obj" | jq -r ".default_branch")
-  upstream_git="${REPO_MAP[$repo_name]-}"
-
-  if [[ -z "$upstream_git" ]]; then
-    echo "[SKIP] no upstream mapping: ${repo_name}"
-    echo "SKIP" > "${TMP_WORK}/${repo_name}.result"
-    continue
-  fi
-
-  owner_repo=$(echo "$upstream_git" | sed -E 's#^https://github.com/(.*)\.git$#\1#')
-  if [[ -z "$owner_repo" ]]; then
-    echo "[ERROR] parse upstream failed: ${repo_name}"
-    echo "ERROR" > "${TMP_WORK}/${repo_name}.result"
-    continue
-  fi
-
-  (
-    gitee_hash=$(curl -s -u "${GITEE_USER}:${MY_GITEE_PAT}" "${GITEE_API}/repos/${GITEE_ORG}/${repo_name}/branches/${gitee_default_branch}" | jq -r ".commit.sha")
-    gh_def_branch=$(curl -s "${GITHUB_API}/repos/${owner_repo}" | jq -r ".default_branch")
-    github_hash=$(curl -s "${GITHUB_API}/repos/${owner_repo}/branches/${gh_def_branch}" | jq -r ".commit.sha")
-
-    if [[ "${github_hash}" == "null" || -z "${github_hash}" || "${gitee_hash}" == "null" || -z "${gitee_hash}" ]]; then
-      echo "SKIP" > "${TMP_WORK}/${repo_name}.result"
-    elif [[ "${github_hash}" == "${gitee_hash}" ]]; then
-      echo "OK" > "${TMP_WORK}/${repo_name}.result"
-    else
-      echo "NEED_SYNC" > "${TMP_WORK}/${repo_name}.result"
-    fi
-  ) &
-
-  cur=$(cat "${TMP_WORK}/job_count")
-  cur=$((cur + 1))
-  echo "$cur" > "${TMP_WORK}/job_count"
-  if (( cur >= PARALLEL_JOBS )); then
-    wait -n 2>/dev/null || wait
-    cur=$(cat "${TMP_WORK}/job_count")
-    cur=$((cur - 1))
-    echo "$cur" > "${TMP_WORK}/job_count"
-  fi
-done < <(jq -c ".[]" "${TMP_WORK}/gitee_repos.json")
-wait
-
-# 收集校验结果
-SYNC_REPOS=()
-OK_COUNT=0
-SKIP_COUNT=0
-FAIL_COUNT=0
-SYNC_OK=0
-SYNC_FAIL=0
-for result_file in "${TMP_WORK}"/*.result; do
-  [[ -f "$result_file" ]] || continue
-  repo_name=$(basename "$result_file" .result)
-  status=$(cat "$result_file")
-  case "$status" in
-    OK)
-      echo "[OK] ${repo_name} already up-to-date"
-      OK_COUNT=$((OK_COUNT + 1))
-      ;;
-    NEED_SYNC)
-      echo "[SYNC] ${repo_name} needs mirror"
-      SYNC_REPOS+=("$repo_name")
-      ;;
-    SKIP)
-      SKIP_COUNT=$((SKIP_COUNT +1))
-      ;;
-    *)
-      echo "[ERROR] ${repo_name} check failed"
-      FAIL_COUNT=$((FAIL_COUNT +1))
-      ;;
-  esac
-done
-echo "Check stat: ok=${OK_COUNT} need_sync=${#SYNC_REPOS[@]} skip=${SKIP_COUNT} fail=${FAIL_COUNT}"
-
-# 推送到gitee
-push_to_gitee(){
-  local repo_name="$1"
-  local mirror_dir="$2"
-  cd "${mirror_dir}" || return 1
-  git remote add gitee "https://${GITEE_USER}:${MY_GITEE_PAT}@gitee.com/${GITEE_ORG}/${repo_name}.git"
-  local push_output
-  push_output=$(git push --mirror gitee 2>&1) || true
-  echo "$push_output" | grep -v "refs/pull/"
-  git remote remove gitee
-  cd - >/dev/null || return 1
-  # 忽略 "failed to push some refs" (refs/pull/* 被拒) 只要有成功推送的分支即可
-  if echo "$push_output" | grep -qE '\->' && ! echo "$push_output" | grep -qiE "fatal|authentication"; then
-    return 0
-  fi
-  echo "[PUSH ERROR] push failed"
-  return 1
-}
-
-# 执行同步
-if [[ ${#SYNC_REPOS[@]} -eq 0 ]]; then
-  echo "All repos are up-to-date, nothing to sync."
-else
-  echo "Start syncing ${#SYNC_REPOS[@]} repos..."
-  for repo_name in "${SYNC_REPOS[@]}"; do
-    upstream_git="${REPO_MAP[$repo_name]}"
-    echo "----------------------------------------"
-    echo "Processing ${repo_name}"
-    MIRROR_DIR="${TMP_WORK}/mirror_${repo_name}"
-    rm -rf "${MIRROR_DIR}"
-    echo "  [1/2] clone ${upstream_git}"
-    if git clone --mirror "${upstream_git}" "${MIRROR_DIR}" 2>/dev/null; then
-      echo "  [OK] clone success"
-      if push_to_gitee "${repo_name}" "${MIRROR_DIR}"; then
-        echo "[SUCCESS] ${repo_name} synced"
-        SYNC_OK=$((SYNC_OK+1))
-      else
-        echo "[FAILED] ${repo_name} push error"
-        SYNC_FAIL=$((SYNC_FAIL+1))
-      fi
-    else
-      echo "  [FAIL] clone failed"
-      echo "[FAILED] ${repo_name} clone error"
-      SYNC_FAIL=$((SYNC_FAIL+1))
-    fi
-    rm -rf "${MIRROR_DIR}"
-  done
-  echo "Sync result: ok=${SYNC_OK} fail=${SYNC_FAIL}"
+if (( ${#REPO_MAP[@]} == 0 )); then
+  echo "FATAL: 映射表为空或解析失败: ${REPO_MAP_FILE}"
+  exit 1
 fi
 
-rm -rf "${TMP_WORK}"
+# 确定本次要同步的仓库
+SYNC_REPOS=()
+if [[ -n "${REPO_LIST}" ]]; then
+  IFS=',' read -r -a SYNC_REPOS <<< "${REPO_LIST}"
+  echo "本次指定同步 ${#SYNC_REPOS[@]} 个仓库 (来自 check 工作流)"
+else
+  mapfile -t SYNC_REPOS < <(printf '%s\n' "${!REPO_MAP[@]}" | sort)
+  echo "未指定仓库, 同步全部 ${#SYNC_REPOS[@]} 个映射仓库"
+fi
+
+TMP_WORK="$(mktemp -d)"
+trap 'rm -rf "${TMP_WORK}"' EXIT
+
+echo "推送重试: 最多 ${PUSH_RETRY_MAX} 次, 单次超时 ${PUSH_TIMEOUT_SEC}s"
+
+SYNC_OK=0
+SYNC_FAIL=0
+SYNC_SKIP=0
+OK_REPOS=()
+FAILED_REPOS=()
+
+for repo_name in "${SYNC_REPOS[@]}"; do
+  # 去掉可能的空白
+  repo_name="$(echo "${repo_name}" | tr -d '[:space:]')"
+  [[ -n "${repo_name}" ]] || continue
+
+  upstream_git="${REPO_MAP[${repo_name}]-}"
+  if [[ -z "${upstream_git}" ]]; then
+    echo "----------------------------------------"
+    echo "[SKIP] ${repo_name} 无上游映射, 跳过"
+    SYNC_SKIP=$(( SYNC_SKIP + 1 ))
+    continue
+  fi
+
+  echo "----------------------------------------"
+  echo "Processing ${repo_name} <- ${upstream_git}"
+
+  MIRROR_DIR="${TMP_WORK}/mirror_${repo_name}"
+  rm -rf "${MIRROR_DIR}"
+
+  echo "  [1/2] clone --mirror"
+  clone_out=$(git clone --mirror "${upstream_git}" "${MIRROR_DIR}" 2>&1)
+  clone_rc=$?
+  printf '%s\n' "${clone_out}" | grep -v '^Cloning into' || true
+  if (( clone_rc != 0 )) || [[ ! -d "${MIRROR_DIR}" ]]; then
+    echo "  [FAIL] clone failed (rc=${clone_rc})"
+    echo "[FAILED] ${repo_name} clone error"
+    SYNC_FAIL=$(( SYNC_FAIL + 1 ))
+    FAILED_REPOS+=("${repo_name}")
+    continue
+  fi
+  echo "  [OK] clone success"
+
+  echo "  [2/2] push --mirror -> gitee/${GITEE_ORG}/${repo_name}"
+  if bash "${SCRIPT_DIR}/retry-push.sh" "${repo_name}" "${MIRROR_DIR}"; then
+    echo "[SUCCESS] ${repo_name} synced"
+    SYNC_OK=$(( SYNC_OK + 1 ))
+    OK_REPOS+=("${repo_name}")
+  else
+    echo "[FAILED] ${repo_name} push error"
+    SYNC_FAIL=$(( SYNC_FAIL + 1 ))
+    FAILED_REPOS+=("${repo_name}")
+  fi
+
+  rm -rf "${MIRROR_DIR}"
+done
+
+echo "----------------------------------------"
+echo "Sync result: ok=${SYNC_OK} fail=${SYNC_FAIL} skip=${SYNC_SKIP}"
 
 # GitHub Actions Summary
 {
-  echo "## 🔄 镜像同步报告"
+  echo "## 🔄 IME 镜像同步报告"
   echo ""
   echo "| 指标 | 数量 |"
   echo "|------|------|"
-  echo "| ✅ 已是最新 | ${OK_COUNT} |"
-  echo "| 🔄 已同步 | ${SYNC_OK} |"
-  echo "| ⏭️ 跳过 | ${SKIP_COUNT} |"
-  echo "| ❌ 失败 | $((FAIL_COUNT + SYNC_FAIL)) |"
+  echo "| ✅ 同步成功 | ${SYNC_OK} |"
+  echo "| ❌ 同步失败 | ${SYNC_FAIL} |"
+  echo "| ⏭️ 无上游映射 | ${SYNC_SKIP} |"
   echo ""
-  if [[ ${#SYNC_REPOS[@]} -gt 0 ]]; then
-    echo "### 已同步仓库"
+  if (( ${#OK_REPOS[@]} > 0 )); then
+    echo "### ✅ 已同步"
     echo ""
-    for repo in "${SYNC_REPOS[@]}"; do
+    for repo in "${OK_REPOS[@]}"; do
       echo "- \`${repo}\`"
     done
+    echo ""
   fi
-} >> "$GITHUB_STEP_SUMMARY"
+  if (( ${#FAILED_REPOS[@]} > 0 )); then
+    echo "### ❌ 同步失败"
+    echo ""
+    for repo in "${FAILED_REPOS[@]}"; do
+      echo "- \`${repo}\`"
+    done
+    echo ""
+  fi
+} >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+
 echo "Job finished."
+
+# 有仓库同步失败 => 让 job 变红, 便于发现
+if (( SYNC_FAIL > 0 )); then
+  exit 1
+fi

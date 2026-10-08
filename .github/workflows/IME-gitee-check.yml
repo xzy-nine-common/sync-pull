@@ -1,0 +1,63 @@
+name: IME镜像-每日检查
+
+# 每天比对 gitee 与 GitHub 默认分支 SHA, 只做检查, 不 clone 不 push。
+# 有差异时才调用「IME镜像-同步」工作流, 让重日志只出现在真正需要的时候。
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+# 同一时间只允许一个检查任务
+concurrency:
+  group: ime-gitee-check
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: 差异检查
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      need_sync: ${{ steps.check.outputs.need_sync }}
+      repos: ${{ steps.check.outputs.repos }}
+    env:
+      GITEE_USER: xzy_nine
+      GITEE_ORG: xzy-ime
+      GITEE_API: https://gitee.com/api/v5
+      GITHUB_API: https://api.github.com
+      PARALLEL_JOBS: 6
+      MY_GITEE_PAT: ${{ secrets.MY_GITEE_PAT }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt update && sudo apt install -y jq
+
+      - name: 比对默认分支 SHA
+        id: check
+        run: bash check.sh IME/repo-map.json
+
+      - name: 检查结果提示
+        if: always()
+        run: |
+          {
+            echo ""
+            echo "### 下一步"
+            echo ""
+            if [[ "${{ steps.check.outputs.need_sync }}" == "0" ]]; then
+              echo "无需同步, 未触发同步工作流。"
+            else
+              echo "需要同步 ${{ steps.check.outputs.need_sync }} 个仓库, 已触发「IME镜像-同步」。"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # 有差异才调用同步工作流
+  trigger-sync:
+    name: 触发同步
+    needs: check
+    if: needs.check.outputs.need_sync != '0' && needs.check.outputs.need_sync != ''
+    uses: ./.github/workflows/IME-gitee-sync.yml
+    with:
+      repos: ${{ needs.check.outputs.repos }}
+    secrets: inherit
