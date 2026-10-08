@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # 推送封装: 带超时 + 自动重试
-# 用法: retry-push.sh <仓库名> <镜像目录>
-# 依赖环境变量: GITEE_USER GITEE_ORG MY_GITEE_PAT
+# 用法: retry-push.sh <gitee命名空间> <仓库名> <镜像目录>
+#       命名空间由映射表所在目录名决定, 如 repos/xzy_nine/ -> xzy_nine
+# 依赖环境变量: GITEE_USER MY_GITEE_PAT
 # 可选环境变量: PUSH_RETRY_MAX(默认3) PUSH_RETRY_DELAY(默认30) PUSH_TIMEOUT_SEC(默认2700)
 #
 # 注意: 本脚本刻意不使用 `cmd | grep -q` 这种写法。
@@ -12,15 +13,16 @@
 
 set -o pipefail
 
-REPO_NAME="$1"
-MIRROR_DIR="$2"
+GITEE_NS="$1"
+REPO_NAME="$2"
+MIRROR_DIR="$3"
 
 PUSH_RETRY_MAX="${PUSH_RETRY_MAX:-3}"
 PUSH_RETRY_DELAY="${PUSH_RETRY_DELAY:-30}"
 PUSH_TIMEOUT_SEC="${PUSH_TIMEOUT_SEC:-2700}"
 
-if [[ -z "${REPO_NAME}" || -z "${MIRROR_DIR}" ]]; then
-  echo "[PUSH ERROR] usage: retry-push.sh <repo_name> <mirror_dir>"
+if [[ -z "${GITEE_NS}" || -z "${REPO_NAME}" || -z "${MIRROR_DIR}" ]]; then
+  echo "[PUSH ERROR] usage: retry-push.sh <gitee_ns> <repo_name> <mirror_dir>"
   exit 1
 fi
 
@@ -55,7 +57,7 @@ push_once() {
   cd "${mirror_dir}" || return 1
 
   git remote remove gitee >/dev/null 2>&1 || true
-  git remote add gitee "https://${GITEE_USER}:${MY_GITEE_PAT}@gitee.com/${GITEE_ORG}/${repo_name}.git"
+  git remote add gitee "https://${GITEE_USER}:${MY_GITEE_PAT}@gitee.com/${GITEE_NS}/${repo_name}.git"
 
   local timeout_cmd=()
   if command -v timeout >/dev/null 2>&1 && [[ -n "${PUSH_TIMEOUT_SEC}" ]]; then
@@ -73,12 +75,12 @@ push_once() {
 
   # 超时被杀 (timeout 返回 124) 属于失败
   if (( rc == 124 )); then
-    echo "[PUSH ERROR] ${repo_name} 推送超时 (${PUSH_TIMEOUT_SEC}s)"
+    echo "[PUSH ERROR] ${GITEE_NS}/${repo_name} 推送超时 (${PUSH_TIMEOUT_SEC}s)"
     return 1
   fi
 
   if is_fatal_error "${out}"; then
-    echo "[PUSH ERROR] ${repo_name} 推送出现致命错误"
+    echo "[PUSH ERROR] ${GITEE_NS}/${repo_name} 推送出现致命错误"
     return 1
   fi
 
@@ -91,27 +93,27 @@ push_once() {
     return 0
   fi
 
-  echo "[PUSH ERROR] ${repo_name} 没有任何引用被推送 (rc=${rc})"
+  echo "[PUSH ERROR] ${GITEE_NS}/${repo_name} 没有任何引用被推送 (rc=${rc})"
   return 1
 }
 
 attempt=1
 while (( attempt <= PUSH_RETRY_MAX )); do
-  echo "[PUSH] ${REPO_NAME} 第 ${attempt}/${PUSH_RETRY_MAX} 次尝试"
+  echo "[PUSH] ${GITEE_NS}/${REPO_NAME} 第 ${attempt}/${PUSH_RETRY_MAX} 次尝试"
   if push_once "${REPO_NAME}" "${MIRROR_DIR}"; then
     if (( attempt > 1 )); then
-      echo "[RETRY OK] ${REPO_NAME} 第 ${attempt} 次尝试成功"
+      echo "[RETRY OK] ${GITEE_NS}/${REPO_NAME} 第 ${attempt} 次尝试成功"
     fi
     exit 0
   fi
 
   if (( attempt < PUSH_RETRY_MAX )); then
     delay=$(( PUSH_RETRY_DELAY * attempt ))
-    echo "[RETRY] ${REPO_NAME} 推送失败, ${delay}s 后重试 (${attempt}/${PUSH_RETRY_MAX})"
+    echo "[RETRY] ${GITEE_NS}/${REPO_NAME} 推送失败, ${delay}s 后重试 (${attempt}/${PUSH_RETRY_MAX})"
     sleep "${delay}"
   fi
   attempt=$(( attempt + 1 ))
 done
 
-echo "[FAILED] ${REPO_NAME} 重试 ${PUSH_RETRY_MAX} 次后仍然失败"
+echo "[FAILED] ${GITEE_NS}/${REPO_NAME} 重试 ${PUSH_RETRY_MAX} 次后仍然失败"
 exit 1

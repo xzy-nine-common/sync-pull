@@ -1,38 +1,39 @@
-name: IME镜像-同步
+name: Gitee镜像-同步
 
 # 实际执行 clone + push 的工作流。
+# Gitee 命名空间由 repos/<命名空间>/repo-map.json 的目录名决定。
 # 触发方式:
-#   1. 被「IME镜像-每日检查」在有差异时调用(workflow_call), 只同步指定仓库
+#   1. 被「Gitee镜像-每日检查」在有差异时调用(workflow_call), 只同步指定仓库
 #   2. 手动触发(workflow_dispatch), 可留空同步全部映射仓库
 on:
   workflow_call:
     inputs:
       repos:
-        description: '待同步仓库, 逗号分隔; 留空表示全部'
+        description: '待同步仓库, 逗号分隔的 命名空间/仓库名; 留空表示全部'
         required: false
         type: string
         default: ''
   workflow_dispatch:
     inputs:
       repos:
-        description: '待同步仓库, 逗号分隔(如 fcitx5,libime); 留空表示全部'
+        description: '待同步仓库, 逗号分隔(如 xzy_nine/deepseek-harness,fcitx5); 留空表示全部'
         required: false
         type: string
         default: ''
 
 # 同一时间只允许一个同步任务, 避免并发推送同一仓库
 concurrency:
-  group: ime-gitee-sync
+  group: gitee-mirror-sync
   cancel-in-progress: false
 
 jobs:
   sync:
     name: 同步
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 240
     env:
       GITEE_USER: xzy_nine
-      GITEE_ORG: xzy-ime
+      REPO_ROOT: repos
       PUSH_RETRY_MAX: 3
       PUSH_RETRY_DELAY: 30
       PUSH_TIMEOUT_SEC: 2700
@@ -53,13 +54,18 @@ jobs:
       - name: 显示本次同步范围
         run: |
           if [[ -z "${TARGET_REPOS}" ]]; then
-            echo "未指定仓库, 将同步映射表中的全部仓库。"
+            echo "未指定仓库, 将同步所有映射表里的全部仓库。"
           else
             echo "本次同步: ${TARGET_REPOS}"
           fi
 
       - name: Run mirror sync
-        run: bash sync.sh IME/repo-map.json "${TARGET_REPOS}"
+        run: |
+          targets=()
+          if [[ -n "${TARGET_REPOS}" ]]; then
+            IFS=',' read -r -a targets <<< "${TARGET_REPOS}"
+          fi
+          bash sync.sh ${targets[@]+"${targets[@]}"}
 
       - name: 失败时输出排查提示
         if: failure()
