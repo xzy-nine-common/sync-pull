@@ -1,7 +1,8 @@
-name: IME镜像-每日检查
+name: Gitee镜像-每日检查
 
-# 每天比对 gitee 与 GitHub 默认分支 SHA, 只做检查, 不 clone 不 push。
-# 有差异时才调用「IME镜像-同步」工作流, 让重日志只出现在真正需要的时候。
+# 每天比对 repos/<命名空间>/repo-map.json 里各仓库的 gitee 与 GitHub 默认分支 SHA。
+# 只做检查, 不 clone 不 push; 有差异时才调用「Gitee镜像-同步」工作流,
+# 让重日志只出现在真正需要同步的时候。
 on:
   schedule:
     - cron: '0 2 * * *'
@@ -9,7 +10,7 @@ on:
 
 # 同一时间只允许一个检查任务
 concurrency:
-  group: ime-gitee-check
+  group: gitee-mirror-check
   cancel-in-progress: false
 
 jobs:
@@ -22,9 +23,9 @@ jobs:
       repos: ${{ steps.check.outputs.repos }}
     env:
       GITEE_USER: xzy_nine
-      GITEE_ORG: xzy-ime
       GITEE_API: https://gitee.com/api/v5
       GITHUB_API: https://api.github.com
+      REPO_ROOT: repos
       PARALLEL_JOBS: 6
       MY_GITEE_PAT: ${{ secrets.MY_GITEE_PAT }}
     steps:
@@ -36,7 +37,7 @@ jobs:
 
       - name: 比对默认分支 SHA
         id: check
-        run: bash check.sh IME/repo-map.json
+        run: bash check.sh
 
       - name: 检查结果提示
         if: always()
@@ -48,7 +49,7 @@ jobs:
             if [[ "${{ steps.check.outputs.need_sync }}" == "0" ]]; then
               echo "无需同步, 未触发同步工作流。"
             else
-              echo "需要同步 ${{ steps.check.outputs.need_sync }} 个仓库, 已触发「IME镜像-同步」。"
+              echo "需要同步 ${{ steps.check.outputs.need_sync }} 个仓库, 已触发「Gitee镜像-同步」。"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -57,7 +58,7 @@ jobs:
     name: 触发同步
     needs: check
     if: needs.check.outputs.need_sync != '0' && needs.check.outputs.need_sync != ''
-    uses: ./.github/workflows/IME-gitee-sync.yml
+    uses: ./.github/workflows/gitee-sync.yml
     with:
       repos: ${{ needs.check.outputs.repos }}
     secrets: inherit
