@@ -34,7 +34,7 @@ gh run view <run-id> --repo xzy-nine-common/sync-pull --log \
 
 ## 镜像差异比对
 
-比两侧默认分支 HEAD，免令牌、免 jq。PowerShell（本机首选，并发 8）：
+比两侧默认分支 HEAD。gitee 侧直连，GitHub 侧走 `gh api`。PowerShell（本机首选，并发 8）：
 
 ```powershell
 $map = foreach ($mapFile in Get-ChildItem repos/*/repo-map.json) {
@@ -45,7 +45,7 @@ $map = foreach ($mapFile in Get-ChildItem repos/*/repo-map.json) {
 $map | ForEach-Object -Parallel {
   $r = $_
   $g = ((git -c http.sslBackend=openssl ls-remote "https://gitee.com/$($r.ns)/$($r.name).git" HEAD 2>$null | Select-Object -First 1) -split '\s+')[0]
-  $h = ((git -c http.sslBackend=openssl ls-remote "https://github.com/$($r.up).git" HEAD 2>$null | Select-Object -First 1) -split '\s+')[0]
+  $h = [string](gh api "repos/$($r.up)/commits?per_page=1" --jq '.[0].sha' 2>$null)
   [pscustomobject]@{
     repo = "$($r.ns)/$($r.name)"; gitee = $g; github = $h
     status = if ($g -notmatch '^[0-9a-f]{40}$') { 'GITEE_MISSING' }
@@ -67,7 +67,7 @@ for map in repos/*/repo-map.json; do
 done | while read -r key upstream; do
   up=${upstream#https://github.com/}; up=${up%.git}
   g=$(git -c http.sslBackend=openssl ls-remote "https://gitee.com/$key.git" HEAD 2>/dev/null | cut -f1)
-  h=$(git -c http.sslBackend=openssl ls-remote "https://github.com/$up.git" HEAD 2>/dev/null | cut -f1)
+  h=$(gh api "repos/$up/commits?per_page=1" --jq '.[0].sha' 2>/dev/null)
   if   [[ -z "$g" ]]; then s=GITEE_MISSING
   elif [[ -z "$h" ]]; then s=GH_ERROR
   elif [[ "$g" == "$h" ]]; then s=OK
@@ -153,6 +153,7 @@ bash retry-push.sh <命名空间> <仓库名> <镜像目录>
 ## 本机 / 沙箱注意
 
 - Windows 上 git 走 schannel 会报 `SEC_E_NO_CREDENTIALS`，命令加 `-c http.sslBackend=openssl`
+- 本机直连 github.com:443 不通（gitee 正常），GitHub 侧一律走 `gh api`
 - PATH 里没有 `bash` 与 `jq`，Git Bash 在 `C:\Program Files\Git\bin\bash.exe`，jq 需另装
 - `gh run view --log` 需要可写缓存目录（默认 `%LocalAppData%\GitHub CLI` 在工作区外）：
 
